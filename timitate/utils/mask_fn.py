@@ -6,7 +6,7 @@ from pysc2.lib.typeenums import UNIT_TYPEID, BUFF_ID, ABILITY_ID, UPGRADE_ID
 from timitate.utils.const import BUILDINGS_SET, BASES_SET, UPGRADE_ID, \
    AIR_UNITS_SET, NEUTRAL_VESPENE_SET, NEUTRAL_MINERAL_SET, VESPENE_CAP_SET, \
    NEUTRAL_ATTACKABLE_SET, EGGS_SET, GROUND_UNITS_SET, GROUND_UNITS_BURROWED_SET, \
-   BUILDINGS_RADIUS, ABILITY_RADIUS, KJ_IDEAL_BASE_POS
+   BUILDINGS_RADIUS, ABILITY_RADIUS, KJ_IDEAL_BASE_POS, BUILDINGS
 from timitate.utils.const import ALL_UNIT_TYPES, RESEARCH_ABILITY_IDS, \
    RESEARCH_BUILDINGS_SET, MORPH_ABILITY_IDS, ATTACK_SELF_BUILDINGS_SET, \
    MAP_PLAYABLE_AREA_DICT
@@ -1432,8 +1432,6 @@ for tp in NEUTRAL_MINERAL_SET.union(VESPENE_CAP_SET):
 
 def find_nearest_buildable_pos(ability_id, x, y, obs, game_info,
                                pos_mask_fn, search_radius=2):
-  if ability_id not in ABILITY_RADIUS:
-    return x, y
   search_radius = int(search_radius)
   if pos_mask_fn in [creep_pos_mask_fn, nydus_pos_mask_fn,
                      base_pos_mask_fn, tumor_pos_mask_fn]:
@@ -1468,3 +1466,30 @@ def find_nearest_buildable_pos(ability_id, x, y, obs, game_info,
     return x, y
   else:
     return x + 0.5, y + 0.5
+
+def dist(u, x, y):
+  return ((u.pos.x - x)**2 + (u.pos.y - y)**2) ** 0.5
+
+def find_nearest_corrosivebile_pos(x, y, obs, search_radius=3):
+  ability_radius = 0.5
+  lurker_radius = 0.75
+  search_radius = max(1 + lurker_radius, search_radius)
+  units = [u for u in obs.observation.raw_data.units
+           if (u.alliance == ALLIANCE.ENEMY.value
+               and dist(u, x, y) < search_radius)]
+  lurkers = dict([(i, dist(u, x, y)) for i, u in enumerate(units) if
+                  u.unit_type == UNIT_TYPEID.ZERG_LURKERMPBURROWED.value])
+  # all lurkers are too far away
+  if all([v >= 1 + lurker_radius for v in lurkers.values()]):
+    return x, y
+  buildings = [u for u in units if
+               u.unit_type in BUILDINGS_RADIUS and u.unit_type in BUILDINGS]
+  # predicted pos can not reach any building or lurker
+  if (all([dist(u, x, y) > ability_radius + BUILDINGS_RADIUS[u.unit_type] for u in buildings])
+      and all([v >= ability_radius + lurker_radius for v in lurkers.values()])):
+    nearest_idx = min(lurkers.keys(), key=(lambda k: lurkers[k]))
+    d = lurkers[nearest_idx]
+    nearest_lurker = units[nearest_idx]
+    x = (nearest_lurker.pos.x * (d - 1.0) + x) / d
+    y = (nearest_lurker.pos.y * (d - 1.0) + y) / d
+  return x, y

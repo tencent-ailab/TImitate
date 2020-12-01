@@ -3,6 +3,7 @@ from __future__ import division
 from __future__ import print_function
 
 import os
+import logging
 import copy
 import numpy as np
 from absl import app
@@ -30,6 +31,14 @@ class PB2ActionConverter(BaseConverter):
   def __init__(self, map_resolution=(200, 176), max_unit_num=600,
                max_noop_num=10, dict_space=False, sort_executors=None,
                hack_smart2rally_hatchery_screen=False):
+    logging.info('PB2ActionConverter Configs: '
+                 'map_resolution: {}, max_unit_num: {},'
+                 'max_noop_num: {}, dict_space: {}, sort_executors: {},'
+                 'hack_smart2rally_hatchery_screen: {}'.format(
+      map_resolution, max_unit_num,
+      max_noop_num, dict_space, sort_executors,
+      hack_smart2rally_hatchery_screen))
+
     self._resolution_c, self._resolution_r = map_resolution
     self._max_unit_num = max_unit_num
     self._coorsys = CoorSys(self._resolution_r, self._resolution_c)

@@ -15,12 +15,13 @@ from timitate.lib6.pb2all_converter import PB2AllConverter
 from timitate.lib6.pb2mask_converter import PB2MaskConverter
 from timitate.lib6.z_actions import ZERG_ABILITIES
 from timitate.utils_replay import get_replay_actor_interface
+from tleague.actors.replay_actor import _get_interface as tleague_rep_actor_interface
 
 
 FLAGS = flags.FLAGS
 flags.DEFINE_string("replay_dir", 'replays/ext_480', "replay dir")
 flags.DEFINE_string("replay_name", 'abced', "replay name")
-flags.DEFINE_string("game_version", '4.8.0', "game version.")
+flags.DEFINE_string("game_version", '4.10.0', "game version.")
 flags.DEFINE_string("zstat_data_src", './', "zstat_data_src")
 flags.DEFINE_integer("step_mul", 1, "step mul.")
 flags.DEFINE_integer("player_id", 1, "player id.")
@@ -33,6 +34,8 @@ def debug_pb2all_converter():
   run_config = run_configs.get()
   replay_path = path.join(FLAGS.replay_dir, FLAGS.replay_name + '.SC2Replay')
   replay_data = run_config.replay_data(replay_path)
+  game_core_config = {'show_placeholders': True,
+                      'show_burrowed_shadows': True}
 
   # step each frame w. step_mul
   with run_config.start(version=FLAGS.game_version) as controller:
@@ -55,7 +58,12 @@ def debug_pb2all_converter():
       max_bobt_count=20,
       delete_dup_action='v2',
       sort_executors='v2',
-      inj_larv_rule=True
+      inj_larv_rule=True,
+      add_lurker_spine_to_units=True,
+      add_cargo_to_units=True,
+      use_display_type=True,
+      distinguish_effect_camp=True,
+      lurker_effect_decay=0.999,
     )
     pb2all.reset(
       replay_name=FLAGS.replay_name,
@@ -67,7 +75,7 @@ def debug_pb2all_converter():
     controller.start_replay(sc_pb.RequestStartReplay(
       replay_data=replay_data,
       map_data=None,
-      options=get_replay_actor_interface(map_name),
+      options=tleague_rep_actor_interface(map_name, game_core_config=game_core_config),
       observed_player_id=FLAGS.player_id,
       disable_fog=False))
     controller.step()

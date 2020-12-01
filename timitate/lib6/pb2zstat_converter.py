@@ -77,6 +77,9 @@ class PB2UnitCountPostActConverter(BaseConverter):
     # upgraded_techs = pb_obs.observation.raw_data.player.upgrade_ids
     upgrading_tech_act_ids, _ = get_upgrading_tech_act_ids(pb_obs)  # for upgrades
     for u in units:
+      if u.display_type == 4 or u.tag == 0:
+        # placeholders
+        continue
       if u.alliance == 1 and u.unit_type in STAT_OBJECT_CANDIDATES and \
         (u.tag not in self._historic_tag_set or
            u.unit_type not in self._historic_tag_set[u.tag]):
@@ -311,6 +314,9 @@ class PB2BuildOrderWithCoordPostActConverterV2(PB2BuildOrderWithCoordConverter):
     new_units = []
     diff_old_units = []
     for u in units:
+      if u.display_type == 4 or u.tag == 0:
+        # all placeholders' tag is 0
+        continue
       if u.alliance == 1:
         current_order, progress = self.unit_order_with_progress(u)
         if u.tag not in self._historic_tag2order_dict:

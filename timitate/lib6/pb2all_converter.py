@@ -62,20 +62,27 @@ class PB2AllConverter(object):
                dict_space=False,
                sort_executors=None,  # {None}|'v1'|'v2'
                add_cargo_to_units=False,
+               add_lurker_spine_to_units=False,
+               use_display_type=False,
+               distinguish_effect_camp=False,
                game_version='4.7.1',
                zmaker_version='v3',
                hack_smart2rally_hatchery_screen=False,
                delete_dup_action=None,
                crop_to_playable_area=False,
                inj_larv_rule=False,
-               ab_dropout_list=None):
+               ab_dropout_list=None,
+               lurker_effect_decay=0.999,
+               rule_mask=False,
+               **kwargs):
     self._pb2mask_converter = PB2MaskConverter(
       max_unit_num=max_unit_num,
       map_resolution=output_map_size,
       add_cargo_to_units=add_cargo_to_units,
       game_version=game_version,
       inj_larv_rule=inj_larv_rule,
-      ab_dropout_list=ab_dropout_list)
+      ab_dropout_list=ab_dropout_list,
+      rule_mask=rule_mask)
     self._pb2action_converter = PB2ActionConverter(
       max_unit_num=max_unit_num,
       max_noop_num=len(noop_nums),
@@ -90,8 +97,12 @@ class PB2AllConverter(object):
       zstat_data_src=zstat_data_src,
       game_version=game_version,
       add_cargo_to_units=add_cargo_to_units,
+      add_lurker_spine_to_units=add_lurker_spine_to_units,
+      use_display_type=use_display_type,
+      distinguish_effect_camp=distinguish_effect_camp,
       crop_to_playable_area=crop_to_playable_area,
-      zstat_version=zmaker_version)
+      zstat_version=zmaker_version,
+      lurker_effect_decay=lurker_effect_decay)
 
     self._zstat_zeroing_prob = zstat_zeroing_prob
     self._noop_nums = sorted(noop_nums)
@@ -112,7 +123,7 @@ class PB2AllConverter(object):
     self._dbg_prefix = 'pb2all6dbg'
 
   def _check_compatibility(self, action, mask, obs, correct_selection=False):
-    ab_mask, len_mask, selection_mask, cmd_unit_mask, cmd_pos_mask = mask
+    ab_mask, len_mask, selection_mask, cmd_unit_mask, cmd_pos_mask = mask[:5]
     ab_action = action[0]
     s_action = action[3]
     cmd_u_action = action[4]

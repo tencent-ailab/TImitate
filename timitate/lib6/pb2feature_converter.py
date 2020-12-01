@@ -97,18 +97,23 @@ class FeatMaker(BaseConverter):
 
 
 class UnitsFeatMaker(FeatMaker):
-  def __init__(self, max_units, rc_size, reorder_units=False,
-               add_cargo_to_units=False, game_version='4.10.0',
+  def __init__(self, max_units, rc_size,
+               reorder_units=False,
+               add_cargo_to_units=False,
+               use_display_type=False,
+               game_version='4.10.0',
                dtype=np.float32):
     self._max_units = max_units
     self._dtype = dtype
     self._rc_size = rc_size
     self._reorder_units = reorder_units
     self._add_cargo_to_units = add_cargo_to_units
+    self._use_display_type = use_display_type
     self._unit_attr_dict = self._get_unit_type_attributes(game_version)
     self._space = spaces.Tuple([
       spaces.Box(low=0, high=0, shape=(self._max_units,
-                 335 + len(BUILD_ORDER_ABILITY_CANDIDATES)), dtype=self._dtype),  # dense
+                 335 + len(BUILD_ORDER_ABILITY_CANDIDATES) + 4 * int(use_display_type)),
+                 dtype=self._dtype),  # dense
       spaces.Box(low=0, high=0, shape=(self._max_units, 2), dtype=self._dtype),
       # coor
       spaces.Box(low=0, high=0, shape=(self._max_units,), dtype=self._dtype),
@@ -170,6 +175,7 @@ class UnitsFeatMaker(FeatMaker):
       for u in pb[0].observation.raw_data.units:
         cargo_units.extend(self._extract_cargo_u(u, last_tar_tag, map_ori_size,
                                                  last_selected_unit_tags))
+
     # order units from player 1's view (pb[0])
     if self._reorder_units:
       ordered_pb_units = self.order_pb_units(pb[0].observation.raw_data.units)
@@ -180,6 +186,8 @@ class UnitsFeatMaker(FeatMaker):
     # features, coors, buff_type, order_type, unit_type for each entry
     u_entries = [self._extract_u(u, last_tar_tag, map_ori_size, last_selected_unit_tags) for u in
                  ordered_pb_units]
+    # note orders matter that other modules use the original units orders in
+    # raw_data.units as default order
     b_arrays = [np.stack(b) for b in zip(*u_entries, *cargo_units)]
     n = self._max_units - b_arrays[0].shape[0]
     if n < 0:
@@ -188,7 +196,7 @@ class UnitsFeatMaker(FeatMaker):
     else:
       b_arrays = [
         np.pad(b, [(0, n), (0, 0)], 'constant') if len(b.shape) == 2 else
-        np.pad(b, [0, n], 'constant') for b in b_arrays]  # super stupid bug by lxhan! extremely harmful to previous training!
+        np.pad(b, [0, n], 'constant') for b in b_arrays]
     res = tuple([np.asarray(b.squeeze(), dtype=self._dtype) for b in b_arrays])
     return self._check_space(res)
 
@@ -235,6 +243,10 @@ class UnitsFeatMaker(FeatMaker):
       features.extend(one_hot(v=0, depth=32))
       features.extend(one_hot(v=0, depth=32))
       features.append(0)
+
+      if self._use_display_type:
+        display_type = [0] * 4
+        features.extend(display_type)
 
       if last_selected_unit_tags is None:
         features.append(0)
@@ -330,12 +342,12 @@ class UnitsFeatMaker(FeatMaker):
     # if self._use_on_screen:
     #     features.append(int(pb_u.is_on_screen))
 
-    # TODO: display_type should be useful and AStar used this feature
-    #  but we mistakenly removed it a long time ago (since lib1)...
-    # display_type should be used along with move_camera
-    # display_type = [0] * 3
-    # display_type[pb_unit.display_type - 1] = 1
-    # features.extend(display_type)
+    # display_type should be useful and AStar used this feature
+    # Visible = 1, Snapshot = 2, Hidden = 3, Placeholder = 4
+    if self._use_display_type:
+      display_type = [0] * 4
+      display_type[u.display_type - 1] = 1
+      features.extend(display_type)
 
     # Notice: AStar like space should not use u.is_selected from game core;
     # must use whether in last selection action
@@ -395,12 +407,19 @@ class UnitsFeatMaker(FeatMaker):
            np.array(order_type, dtype=self._dtype), \
            np.array(unit_type, dtype=self._dtype)
 
+  def reset(self, **kwargs):
+    pass
+
 
 class ImgFeatMaker(FeatMaker):
-  def __init__(self, rc_size, dtype=np.float32, game_version='4.7.1'):
+  def __init__(self, rc_size, dtype=np.float32, game_version='4.7.1',
+               distinguish_effect_camp=False, lurker_effect_decay=0.999):
     self._rc_size = rc_size
+    self._distinguish_effect_camp = distinguish_effect_camp
     self._dtype = dtype
-    self._space = spaces.Box(low=0, high=0, shape=self._rc_size + (15,),
+    self._space = spaces.Box(low=0, high=0,
+                             shape=self._rc_size + (15 +
+                             len(EFFECTS_USED) * int(distinguish_effect_camp),),
                              dtype=self._dtype)
     self._tensor_names = ['X_IMAGE']
     # self._flip = LooseVersion(game_version) >= LooseVersion('4.8.6')
@@ -409,6 +428,13 @@ class ImgFeatMaker(FeatMaker):
     # pathing_grid and placement_grid are reversed in y-axis after 4.8.2(include)
     # Mac flips creep/visibility from 4.9.0, pathing/placement from 4.8.6
     self._flip = (game_version not in ['4.7.1', '4.8.0'])
+    self._lurker_effect_decay = lurker_effect_decay
+    self._last_lurker_effect_map = None
+    self._last_lurker_effect_frame = 0
+
+  def reset(self, **kwargs):
+    self._last_lurker_effect_map = None
+    self._last_lurker_effect_frame = 0
 
   def make(self, pb, last_units):
     assert self._flip, "4.7.1/4.8.0 are not supported any more!"
@@ -445,13 +471,46 @@ class ImgFeatMaker(FeatMaker):
     #         unit = obs.observation.raw_data.units[tag2idx[last_tag]]
     #         alerts_grid[y - 1 - int(unit.pos.y), int(unit.pos.x)] = 1.0
 
-    effect_grid = np.zeros((y, x, len(EFFECTS_USED)), dtype=self._dtype)
-    for e in obs.observation.raw_data.effects:
-      if e.effect_id in EFFECTS_USED:
-        ind = EFFECTS_USED.index(e.effect_id)
-        for p in e.pos:
-          effect_grid[y - 1 - int(p.y), int(p.x), ind] = 1.0
+    if self._last_lurker_effect_map is None:
+      if self._distinguish_effect_camp:
+        self._last_lurker_effect_map = np.zeros(shape=(y, x, 2), dtype=self._dtype)
+      else:
+        self._last_lurker_effect_map = np.zeros(shape=(y, x), dtype=self._dtype)
+    else:  # decay
+      assert obs.observation.game_loop >= self._last_lurker_effect_frame, 'check reset'
+      self._last_lurker_effect_map *= \
+        self._lurker_effect_decay ** (
+            obs.observation.game_loop-self._last_lurker_effect_frame)
+      self._last_lurker_effect_frame = obs.observation.game_loop
 
+    if self._distinguish_effect_camp:
+      effect_grid = np.zeros((y, x, len(EFFECTS_USED) * 2), dtype=self._dtype)
+      for e in obs.observation.raw_data.effects:
+        if e.effect_id in EFFECTS_USED:
+          ind = EFFECTS_USED.index(e.effect_id)
+          for p in e.pos:
+            effect_grid[y - 1 - int(p.y), int(p.x),
+                        ind + len(EFFECTS_USED)*int(e.alliance == 4)] = 1.0
+          if e.effect_id == Effects.LurkerSpines.value:
+            for p in e.pos:
+              self._last_lurker_effect_map[
+                y - 1 - int(p.y), int(p.x), int(e.alliance == 4)] = 1.0
+      effect_grid[:, :, EFFECTS_USED.index(Effects.LurkerSpines)] = \
+        self._last_lurker_effect_map[:, :, 0]
+      effect_grid[:, :, EFFECTS_USED.index(Effects.LurkerSpines)+len(EFFECTS_USED)] = \
+        self._last_lurker_effect_map[:, :, 1]
+    else:
+      effect_grid = np.zeros((y, x, len(EFFECTS_USED)), dtype=self._dtype)
+      for e in obs.observation.raw_data.effects:
+        if e.effect_id in EFFECTS_USED:
+          ind = EFFECTS_USED.index(e.effect_id)
+          for p in e.pos:
+            effect_grid[y - 1 - int(p.y), int(p.x), ind] = 1.0
+        if e.effect_id == Effects.LurkerSpines.value:
+            for p in e.pos:
+              self._last_lurker_effect_map[y - 1 - int(p.y), int(p.x)] = 1.0
+      effect_grid[:, :, EFFECTS_USED.index(Effects.LurkerSpines)] = \
+        self._last_lurker_effect_map
 
     image_features = (norm_img(feature_minimap.height_map),
                       norm_img(feature_minimap.pathable),
@@ -696,6 +755,9 @@ class GlobalFeatMaker(FeatMaker):
            )
     return self._check_space(res)
 
+  def reset(self, **kwargs):
+    pass
+
 
 class CargoFeatMaker(FeatMaker):
   def __init__(self, max_cargo_num, dtype):
@@ -800,7 +862,8 @@ class TargetZStatMaker(FeatMaker):
     self._zstat = self.zstat_db.get(key)
     if self._zstat is None:
       # for debug with 'v3' zstat
-      # self._zstat = [np.zeros((80,)), np.zeros((50,62)), np.zeros((50,18))]
+      # self._zstat = [np.zeros((80,)), np.zeros((50, 62)), np.zeros((50, 18)),
+      #                np.zeros((20, 46)), np.zeros((20, 18))]
       raise IOError(
         'db {}, failed reading data from replay_name {}, player_id {}'.format(
           self.zstat_db, replay_name, player_id)
@@ -941,6 +1004,9 @@ class ImmZStatMaker(FeatMaker):
     zstat = [a.astype(self._dtype) for a in zstat]
     return self._check_space(tuple(zstat))
 
+  def reset(self, **kwargs):
+    self._pb2zstat_cvt.reset()
+
 
 class MMRMaker(FeatMaker):
   """PB to MMR. Return a one-hot vector to indicate the quantized value."""
@@ -1011,7 +1077,24 @@ class PB2FeatureConverter(BaseConverter):
                zstat_version='v3',
                reorder_units=False,
                crop_to_playable_area=False,
-               add_cargo_to_units=False):
+               add_cargo_to_units=False,
+               use_display_type=False,
+               distinguish_effect_camp=False,
+               lurker_effect_decay=0.999,
+               **kwargs):
+    logging.info('PB2FeatureConverter Configs: use_on_screen: {},'
+                 'max_unit_num: {}, map_resolution: {}, game_version: {},'
+                 'max_bo_count: {}, max_bobt_count: {}, zstat_data_src: {},'
+                 'dict_space: {}, zstat_version: {}, reorder_units: {},'
+                 'crop_to_playable_area: {}, add_cargo_to_units: {},'
+                 'add_blinding_cloud_to_units: {},'
+                 'add_corrosivebile_to_units: {}, use_display_type: {},'
+                 'distinguish_effect_camp: {}, lurker_effect_decay: {}'.format(
+      use_on_screen, max_unit_num, map_resolution, game_version, max_bo_count,
+      max_bobt_count, zstat_data_src, dict_space, zstat_version, reorder_units,
+      crop_to_playable_area, add_cargo_to_units, use_display_type,
+      distinguish_effect_camp, lurker_effect_decay))
+
     self._use_on_screen = use_on_screen
     self._rc_size = (map_resolution[1], map_resolution[0])
     # alerts are not available in 4.7.1, so disable by default
@@ -1022,10 +1105,13 @@ class PB2FeatureConverter(BaseConverter):
                                             rc_size=self._rc_size,
                                             reorder_units=reorder_units,
                                             add_cargo_to_units=add_cargo_to_units,
+                                            use_display_type=use_display_type,
                                             game_version=game_version,
                                             dtype=dtype)
     self._img_feat_maker = ImgFeatMaker(rc_size=self._rc_size, dtype=dtype,
-                                        game_version=game_version)
+                                        game_version=game_version,
+                                        distinguish_effect_camp=distinguish_effect_camp,
+                                        lurker_effect_decay=lurker_effect_decay)
     self._global_feat_maker = GlobalFeatMaker(game_version=game_version,
                                               dtype=dtype)
     # self._cargo_feat_maker = CargoFeatMaker(max_cargo_num=max_cargo_num,
@@ -1041,7 +1127,7 @@ class PB2FeatureConverter(BaseConverter):
       zstat_data_src=zstat_data_src,
       dtype=dtype,
       zstat_version=zstat_version,
-      crop = crop_to_playable_area,
+      crop=crop_to_playable_area,
     )
     self._mmr_maker = MMRMaker(dtype=dtype)
     self._map_ind_maker = MapIndicatorMaker(
@@ -1065,6 +1151,10 @@ class PB2FeatureConverter(BaseConverter):
                               zstat_zeroing_prob=zstat_zeroing_prob)
     self._mmr_maker.reset(mmr=mmr)
     self._map_ind_maker.reset(map_name=map_name)
+    self._img_feat_maker.reset()
+    self._global_feat_maker.reset()
+    self._units_feat_maker.reset()
+    self.immzstat_maker.reset()
 
   def convert(self, pb, last_tar_tag, last_units, last_selected_unit_tags):
     unit_features = self._units_feat_maker.make(pb, last_tar_tag, last_selected_unit_tags)

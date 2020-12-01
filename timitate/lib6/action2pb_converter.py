@@ -15,8 +15,10 @@ from timitate.utils.const import IDEAL_BASE_POS_DICT, IDEAL_BASE_POS_CROP_DICT
 from timitate.utils.const import z_skill_tar_map
 from timitate.utils.const import z_train_tar_map_v6
 from timitate.utils.const import z_morph_tar_map_v6
+from timitate.utils.const import ABILITY_RADIUS
 from timitate.utils.utils import CoorSys, map_name_transform
 from timitate.utils.mask_fn import find_nearest_buildable_pos
+from timitate.utils.mask_fn import find_nearest_corrosivebile_pos
 from timitate.lib6.z_actions import ZERG_ABILITIES
 from timitate.lib6.z_actions import ABILITY_TYPES
 from timitate.lib6.z_actions import z_name_map
@@ -39,13 +41,16 @@ mid2uid_map = dict([(ZERG_ABILITIES[z_name_map[morph_name]][2], z_morph_tar_map_
 class Action2PBConverter(BaseConverter):
   def __init__(self, map_padding_size=(152, 168), dict_space=False,
                max_unit_num=600, max_noop_num=128, correct_pos_radius=2.0,
-               verbose=40, correct_building_pos=False, crop_to_playable_area=False):
+               verbose=40, correct_building_pos=False,
+               correct_corrosivebile_pos=False,
+               crop_to_playable_area=False, **kwargs):
     self._map_padding_size = map_padding_size
     self._coorsys = CoorSys(r_max=map_padding_size[1], c_max=map_padding_size[0])
     self._dict_space = dict_space
     self._max_unit_num = max_unit_num
     self._correct_pos_radius = correct_pos_radius
     self._correct_building_pos = correct_building_pos
+    self._correct_corrosivebile_pos = correct_corrosivebile_pos
     self._crop_to_playable_area = crop_to_playable_area
     self._action_spec = ActionSpec(max_unit_num, max_noop_num, map_padding_size)
     self.ideal_positions = None
@@ -126,13 +131,20 @@ class Action2PBConverter(BaseConverter):
           f'Correct building hatchery from {(x_origin, y_origin)} to {(x, y)}.',
           level=level
         )
-      elif self._correct_building_pos:
+      elif self._correct_building_pos and ab_sub_id in ABILITY_RADIUS:
         x, y = find_nearest_buildable_pos(ab_sub_id, x, y, obs_pb, game_info,
                                           pos_mask_fn, self._correct_pos_radius)
         if (x, y) != (x_origin, y_origin):
           self.logger.log(
             f'Correct building pos from {(x_origin, y_origin)} to {(x, y)}.',
             level=level
+          )
+      elif self._correct_corrosivebile_pos and ab_sub_id == ABILITY_ID.EFFECT_CORROSIVEBILE.value:
+        x, y = find_nearest_corrosivebile_pos(x, y, obs_pb, self._correct_pos_radius)
+        if (x, y) != (x_origin, y_origin):
+          self.logger.log(
+            f'Correct corrosivebile pos from {(x_origin, y_origin)} to {(x, y)}.',
+            level=logger.WARN
           )
       return action2pb_fn(ab_sub_id, a_sft, selected_tags, (x, y))
     elif ab_type == ABILITY_TYPES.CMD_UNIT:

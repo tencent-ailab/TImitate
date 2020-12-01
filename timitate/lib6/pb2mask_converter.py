@@ -2,8 +2,10 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import logging
 import numpy as np
 from absl import app
+import copy
 from collections import OrderedDict
 from gym import spaces
 from distutils.version import LooseVersion
@@ -47,7 +49,32 @@ class PB2MaskConverter(BaseConverter):
                overseer_rule=False,
                expl_map_rule=False,
                baneling_rule=False,
-               ab_dropout_list=None):
+               lurker_rule=False,
+               viper_rule=False,
+               drone_cnt_lim=0,
+               viper_cnt_lim=0,
+               building_cnt_lim=0,
+               ab_dropout_list=None,
+               rule_mask=False,
+               **kwargs):
+    logging.info('PB2MaskConverter Configs: max_unit_num: {},'
+                 'map_resolution: {}, add_cargo_to_units: {}, game_version: {},'
+                 'dict_space: {}, inj_larv_rule: {}, ban_zb_rule: {},'
+                 'ban_rr_rule: {}, ban_hydra_rule: {}, rr_food_cap: {},'
+                 'zb_food_cap: {}, hydra_food_cap: {}, mof_lair_rule: {}'
+                 'hydra_spire_rule: {}, overseer_rule: {}, expl_map_rule: {},'
+                 'baneling_rule: {}, lurker_rule: {}, viper_rule: {},'
+                 'drone_cnt_lim: {}, viper_cnt_lim: {}, building_cnt_lim: {}, '
+                 'ab_dropout_list: {}, rule_mask: {}'.format(
+      max_unit_num, map_resolution, add_cargo_to_units, game_version,
+      dict_space, inj_larv_rule, ban_zb_rule,
+      ban_rr_rule, ban_hydra_rule, rr_food_cap,
+      zb_food_cap, hydra_food_cap, mof_lair_rule,
+      hydra_spire_rule, overseer_rule, expl_map_rule,
+      baneling_rule, lurker_rule, viper_rule,
+      drone_cnt_lim, viper_cnt_lim, building_cnt_lim,
+      ab_dropout_list, rule_mask))
+
     self._map_resolution = tuple(map_resolution)
     self._dtype = dtype
     self._max_unit_num = max_unit_num
@@ -75,6 +102,12 @@ class PB2MaskConverter(BaseConverter):
     self._overseer_rule = overseer_rule
     self._expl_map_rule = expl_map_rule
     self._baneling_rule = baneling_rule
+    self._lurker_rule = lurker_rule
+    self._viper_rule = viper_rule
+    self._drone_cnt_lim = drone_cnt_lim
+    self._viper_cnt_lim = viper_cnt_lim
+    self._building_cnt_lim = building_cnt_lim
+
     self._enemy_air = False
     self._enemy_lair = False
     self._enemy_lurker = False
@@ -85,6 +118,14 @@ class PB2MaskConverter(BaseConverter):
     self._self_spire = False
     self._base_visit_time_dict = {}
     self._self_baneling = False
+    self._self_lurkerden = False
+    self._self_lurker = False
+    self._self_infestorpit = False
+    self._self_hive = False
+    self._self_viper = False
+    self._drone_cnt = 0
+    self._viper_cnt = 0
+    self._functional_building_cnt = {}
     self._tensor_names = ['MASK_AB',
                           'MASK_LEN',
                           'MASK_SELECTION',
@@ -93,25 +134,44 @@ class PB2MaskConverter(BaseConverter):
                           ]
     self._ab_dropout_list = ab_dropout_list
     self._arg_mask = self._make_arg_mask()
-    self._lair_units = [UNIT_TYPEID.ZERG_LAIR.value,
-                        UNIT_TYPEID.ZERG_HYDRALISKDEN.value,
-                        UNIT_TYPEID.ZERG_LURKERDENMP.value,
-                        UNIT_TYPEID.ZERG_SPIRE.value,
-                        UNIT_TYPEID.ZERG_GREATERSPIRE.value,
-                        UNIT_TYPEID.ZERG_INFESTATIONPIT.value,
-                        UNIT_TYPEID.ZERG_HIVE.value,
-                        UNIT_TYPEID.ZERG_ULTRALISKCAVERN.value,
-                        UNIT_TYPEID.ZERG_NYDUSCANAL.value,
-                        UNIT_TYPEID.ZERG_NYDUSNETWORK.value,
-                        UNIT_TYPEID.ZERG_HYDRALISK.value,
-                        UNIT_TYPEID.ZERG_LURKERMP.value,
-                        UNIT_TYPEID.ZERG_LURKERMPEGG.value,
-                        UNIT_TYPEID.ZERG_OVERSEER.value,
-                        UNIT_TYPEID.ZERG_OVERSEEROVERSIGHTMODE.value,
-                        UNIT_TYPEID.ZERG_MUTALISK.value,
-                        UNIT_TYPEID.ZERG_CORRUPTOR.value,
-                        UNIT_TYPEID.ZERG_BROODLORD.value,
-                        UNIT_TYPEID.ZERG_VIPER.value]
+    self._lair_units = [
+      UNIT_TYPEID.ZERG_LAIR.value,
+      UNIT_TYPEID.ZERG_HYDRALISKDEN.value,
+      UNIT_TYPEID.ZERG_LURKERDENMP.value,
+      UNIT_TYPEID.ZERG_SPIRE.value,
+      UNIT_TYPEID.ZERG_GREATERSPIRE.value,
+      UNIT_TYPEID.ZERG_INFESTATIONPIT.value,
+      UNIT_TYPEID.ZERG_HIVE.value,
+      UNIT_TYPEID.ZERG_ULTRALISKCAVERN.value,
+      UNIT_TYPEID.ZERG_NYDUSCANAL.value,
+      UNIT_TYPEID.ZERG_NYDUSNETWORK.value,
+      UNIT_TYPEID.ZERG_HYDRALISK.value,
+      UNIT_TYPEID.ZERG_LURKERMP.value,
+      UNIT_TYPEID.ZERG_LURKERMPEGG.value,
+      UNIT_TYPEID.ZERG_OVERSEER.value,
+      UNIT_TYPEID.ZERG_OVERSEEROVERSIGHTMODE.value,
+      UNIT_TYPEID.ZERG_OVERLORDCOCOON.value,
+      UNIT_TYPEID.ZERG_OVERLORDTRANSPORT.value,
+      UNIT_TYPEID.ZERG_TRANSPORTOVERLORDCOCOON.value,
+      UNIT_TYPEID.ZERG_MUTALISK.value,
+      UNIT_TYPEID.ZERG_CORRUPTOR.value,
+      UNIT_TYPEID.ZERG_BROODLORD.value,
+      UNIT_TYPEID.ZERG_BROODLORDCOCOON.value,
+      UNIT_TYPEID.ZERG_VIPER.value]
+    self._functional_building_ab_name = {
+      UNIT_TYPEID.ZERG_LAIR.value: 'Morph_Lair_quick',
+      UNIT_TYPEID.ZERG_HIVE.value: 'Morph_Hive_quick',
+      UNIT_TYPEID.ZERG_GREATERSPIRE.value: 'Morph_GreaterSpire_quick',
+      UNIT_TYPEID.ZERG_SPIRE.value: 'Build_Spire_screen',
+      UNIT_TYPEID.ZERG_ULTRALISKCAVERN.value: 'Build_UltraliskCavern_screen',
+      UNIT_TYPEID.ZERG_INFESTATIONPIT.value: 'Build_InfestationPit_screen',
+      UNIT_TYPEID.ZERG_HYDRALISKDEN.value: 'Build_HydraliskDen_screen',
+      UNIT_TYPEID.ZERG_LURKERDENMP.value: 'Build_LurkerDen_screen',
+    }
+    self._rule_mask = rule_mask
+    if rule_mask:
+      self._tensor_names += ['MASK_RULE_AB',
+                             'MASK_RULE_ACTIVATE']
 
 
   def reset(self, **kwargs):
@@ -126,6 +186,14 @@ class PB2MaskConverter(BaseConverter):
     self._self_spire = False
     self._base_visit_time_dict = {}
     self._self_baneling = False
+    self._self_lurkerden = False
+    self._self_lurker = False
+    self._self_infestorpit = False
+    self._self_hive = False
+    self._self_viper = False
+    self._drone_cnt = 0
+    self._viper_cnt = 0
+    self._functional_building_cnt = {}
 
   """ functions start with _ are used for rules """
   def _update_enemy_air(self, obs):
@@ -217,6 +285,78 @@ class PB2MaskConverter(BaseConverter):
                      u.unit_type == UNIT_TYPEID.ZERG_BANELINGNEST.value)
                     for u in units)
       self._self_baneling = any(baneling_u)
+
+  def _update_self_lurkerden(self, obs):
+    if not self._self_lurkerden:
+      # only trigger once
+      units = obs.observation.raw_data.units
+      lurkerden_u = ((u.alliance == ALLIANCE.SELF.value and
+                     u.unit_type == UNIT_TYPEID.ZERG_LURKERDENMP.value)
+                     for u in units)
+      self._self_lurkerden = any(lurkerden_u)
+
+  def _update_self_lurker(self, obs):
+    if not self._self_lurker:
+      # only trigger once
+      units = obs.observation.raw_data.units
+      lurker_u = ((u.alliance == ALLIANCE.SELF.value and
+                   u.unit_type in [UNIT_TYPEID.ZERG_LURKERMP.value,
+                                   UNIT_TYPEID.ZERG_LURKERMPBURROWED.value,
+                                   UNIT_TYPEID.ZERG_LURKERMPEGG.value])
+                   for u in units)
+      self._self_lurker = any(lurker_u)
+
+  def _update_self_infestorpit(self, obs):
+    if not self._self_infestorpit:
+      # only trigger once
+      units = obs.observation.raw_data.units
+      infestorpit_u = ((u.alliance == ALLIANCE.SELF.value and
+                        u.unit_type == UNIT_TYPEID.ZERG_INFESTATIONPIT.value)
+                        for u in units)
+      self._self_infestorpit = any(infestorpit_u)
+
+  def _update_self_hive(self, obs):
+    if not self._self_hive:
+      # only trigger once
+      units = obs.observation.raw_data.units
+      self_hive_u = ((u.alliance == ALLIANCE.SELF.value and
+                      u.unit_type == UNIT_TYPEID.ZERG_HIVE.value)
+                     for u in units)
+      self_morphing_u = ((u.unit_type == UNIT_TYPEID.ZERG_LAIR.value and
+                          u.alliance == ALLIANCE.SELF.value and
+                          u.build_progress == 1.0 and
+                          len(u.orders) > 0 and
+                          u.orders[0].ability_id == ABILITY_ID.MORPH_HIVE.value)
+                         for u in units)
+      self._self_hive = any(self_hive_u) or any(self_morphing_u)
+
+  def _update_self_viper(self, obs):
+    units = obs.observation.raw_data.units
+    viper_u = ((u.alliance == ALLIANCE.SELF.value and
+                u.unit_type == UNIT_TYPEID.ZERG_VIPER.value)
+                for u in units)
+    # the above viper_u is a generator, which yields element only once
+    self._viper_cnt = sum(viper_u)
+    self._self_viper = self._viper_cnt > 0
+
+  def _count_self_drone(self, obs):
+    units = obs.observation.raw_data.units
+    drone_u = ((u.alliance == ALLIANCE.SELF.value and
+                u.unit_type in [UNIT_TYPEID.ZERG_DRONE.value,
+                                UNIT_TYPEID.ZERG_DRONEBURROWED.value])
+                for u in units)
+    self._drone_cnt = sum(drone_u)
+
+  def _count_functional_building(self, obs):
+    units = obs.observation.raw_data.units
+    self._functional_building_cnt = {}
+    for u in units:
+      if u.alliance == ALLIANCE.SELF.value and \
+         u.unit_type in self._functional_building_ab_name:
+        if u.unit_type not in self._functional_building_cnt:
+          self._functional_building_cnt[u.unit_type] = 1
+        else:
+          self._functional_building_cnt[u.unit_type] += 1
 
   def _explore_map_condition(self, obs, minimap):
     """ This function should be only used for KJ map """
@@ -343,15 +483,32 @@ class PB2MaskConverter(BaseConverter):
     self._update_self_overseer(obs)
     self._update_map_base_condition(obs, images)
     self._update_self_baneling(obs)
+    self._update_self_lurkerden(obs)
+    self._update_self_lurker(obs)
+    self._update_self_infestorpit(obs)
+    self._update_self_hive(obs)
+    self._update_self_viper(obs)
+    self._count_self_drone(obs)
+    self._count_functional_building(obs)
 
-    ab_mask = self._get_ability_mask(obs)
+    ab_mask, ruled_ab_mask = self._get_ability_mask(obs)
     len_mask = self._get_unit_len_mask(obs)
     selection_mask = self._get_selection_mask(obs, ab_mask)
     cmd_unit_mask = self._get_cmd_unit_mask(obs, ab_mask)
     cmd_pos_mask = self._get_cmd_pos_mask(obs, ab_mask, images)
-    ab_mask &= ((~self._arg_mask[:, 3 - 1]) | (np.sum(selection_mask, axis=1) > 0))
-    ab_mask &= ((~self._arg_mask[:, 4 - 1]) | (np.sum(cmd_unit_mask, axis=1) > 0))
-    res = ab_mask, len_mask, selection_mask, cmd_unit_mask, cmd_pos_mask
+    has_selection_unit = (
+          (~self._arg_mask[:, 3 - 1]) | (np.sum(selection_mask, axis=1) > 0))
+    has_target_unit = (
+          (~self._arg_mask[:, 4 - 1]) | (np.sum(cmd_unit_mask, axis=1) > 0))
+    ab_mask &= has_selection_unit
+    ab_mask &= has_target_unit
+    ruled_ab_mask &= has_selection_unit
+    ruled_ab_mask &= has_target_unit
+    rule_activated = np.array([any(ab_mask != ruled_ab_mask)], dtype=np.bool)
+    if self._rule_mask:
+      res = ab_mask, len_mask, selection_mask, cmd_unit_mask, cmd_pos_mask, ruled_ab_mask, rule_activated
+    else:
+      res = ab_mask, len_mask, selection_mask, cmd_unit_mask, cmd_pos_mask
     if self._dict_space:
       return self._check_space(OrderedDict(zip(self.tensor_names, res)))
     else:
@@ -367,6 +524,9 @@ class PB2MaskConverter(BaseConverter):
         spaces.Box(low=0, high=1, shape=(num_abilities, self._max_unit_num), dtype=self._dtype),
         spaces.Box(low=0, high=1, shape=(num_abilities,) + self._map_resolution, dtype=self._dtype),
     ]
+    if self._rule_mask:
+      sps += [spaces.Box(low=0, high=1, shape=(num_abilities,), dtype=self._dtype),
+              spaces.Box(low=0, high=1, shape=(1,), dtype=self._dtype),]
     if self._dict_space:
       return spaces.Dict(OrderedDict(zip(self.tensor_names, sps)))
     else:
@@ -411,6 +571,7 @@ class PB2MaskConverter(BaseConverter):
   """ dynamic mask, building limit mask """
   def _get_ability_mask(self, obs):
     ab_mask = np.array([zab[4](obs) for zab in ZERG_ABILITIES], dtype=np.bool)
+    original_ab_mask = copy.deepcopy(ab_mask)
     ### special treating per rules
     ## inject larva rule
     ab_mask[z_name_map['Effect_InjectLarva_screen']] = \
@@ -442,13 +603,15 @@ class PB2MaskConverter(BaseConverter):
       # first make sure that morph_lair is not executed yet and no lair is built
       # and this action is indeed available at this step, then if enemy has already
       # morphed lair or satisfied some logic
-      if self._enemy_lair or not_rush_fn(obs):
+      ## if self._enemy_lair or not_rush_fn(obs):  # for tr2120-formal
+      if self._enemy_lair or self._enemy_air or self._enemy_lurker:
         ab_mask = np.zeros_like(ab_mask, dtype=np.bool)
         ab_mask[z_name_map['Morph_Lair_quick']] = True
     ## hydraliskden and spire rule
     # if lair exists and enemy has airforce and both hydraliskden and spire do not exist
     if self._hydra_spire_rule and self._self_lair:
-      if self._enemy_air and (not self._self_hydraliskden) and (not self._self_spire):
+      if (self._enemy_air or self._enemy_lurker) and \
+         (not self._self_hydraliskden) and (not self._self_spire):
         can_build_hydraliskden = ZERG_ABILITIES[z_name_map['Build_HydraliskDen_screen']][4](obs)
         can_build_spire = ZERG_ABILITIES[z_name_map['Build_Spire_screen']][4](obs)
         if can_build_hydraliskden or can_build_spire:
@@ -464,12 +627,52 @@ class PB2MaskConverter(BaseConverter):
         if ZERG_ABILITIES[z_name_map['Morph_Overseer_quick']][4](obs):
           ab_mask = np.zeros_like(ab_mask, dtype=np.bool)
           ab_mask[z_name_map['Morph_Overseer_quick']] = True
+    ## lurker rule
+    # if lair and hydraliskden exist and enemy has lurker and self does not
+    if self._lurker_rule and self._self_lair and self._self_hydraliskden:
+      if self._enemy_lurker and (not self._self_lurkerden):
+        if ZERG_ABILITIES[z_name_map['Build_LurkerDen_screen']][4](obs):
+          ab_mask = np.zeros_like(ab_mask, dtype=np.bool)
+          ab_mask[z_name_map['Build_LurkerDen_screen']] = True
+      if self._enemy_lurker and self._self_lurkerden and (not self._self_lurker):
+        if ZERG_ABILITIES[z_name_map['Morph_Lurker_quick']][4](obs):
+          ab_mask = np.zeros_like(ab_mask, dtype=np.bool)
+          ab_mask[z_name_map['Morph_Lurker_quick']] = True
+    ## viper rule
+    # if lair exists and enemy has lurker
+    if self._viper_rule and self._self_lair and self._enemy_lurker:
+      if not self._self_infestorpit:
+        if ZERG_ABILITIES[z_name_map['Build_InfestationPit_screen']][4](obs):
+          ab_mask = np.zeros_like(ab_mask, dtype=np.bool)
+          ab_mask[z_name_map['Build_InfestationPit_screen']] = True
+      if self._self_infestorpit and (not self._self_hive):
+        if ZERG_ABILITIES[z_name_map['Morph_Hive_quick']][4](obs):
+          ab_mask = np.zeros_like(ab_mask, dtype=np.bool)
+          ab_mask[z_name_map['Morph_Hive_quick']] = True
+      if not self._self_spire:
+        if ZERG_ABILITIES[z_name_map['Build_Spire_screen']][4](obs):
+          ab_mask = np.zeros_like(ab_mask, dtype=np.bool)
+          ab_mask[z_name_map['Build_Spire_screen']] = True
+      if self._self_hive and self._self_spire and (not self._self_viper):
+        if ZERG_ABILITIES[z_name_map['Train_Viper_quick']][4](obs):
+          ab_mask = np.zeros_like(ab_mask, dtype=np.bool)
+          ab_mask[z_name_map['Train_Viper_quick']] = True
+    # rules on drone, viper, building cnt
+    if 0 < self._viper_cnt_lim < self._viper_cnt:
+      ab_mask[z_name_map['Train_Viper_quick']] = False
+    if 0 < self._drone_cnt_lim < self._drone_cnt:
+      ab_mask[z_name_map['Train_Drone_quick']] = False
+    for k in self._functional_building_cnt:
+      if 0 < self._building_cnt_lim < self._functional_building_cnt[k]:
+        ab_mask[z_name_map[self._functional_building_ab_name[k]]] = False
+
     # action dropout rule
     if self._ab_dropout_list is not None and len(self._ab_dropout_list) > 0:
       for ab_name in self._ab_dropout_list:
         assert isinstance(ab_name, str) and ab_name in z_name_map
         ab_mask[z_name_map[ab_name]] = False
-    return ab_mask
+    assert any(ab_mask)
+    return original_ab_mask, ab_mask
 
   """ general units len mask """
   def _get_unit_len_mask(self, obs):
@@ -505,6 +708,8 @@ class PB2MaskConverter(BaseConverter):
         # under which condition all attributes are zeros)
         if i < self._max_unit_num:
           enemy_br[i] = True
+    # no need to process lurker spine and cargo units here, since they
+    # are not appeared in raw_data.units
 
     for i, zab in enumerate(ZERG_ABILITIES):
       if not ab_mask[i] or zab[func_id] == zero_unit_mask_fn:
