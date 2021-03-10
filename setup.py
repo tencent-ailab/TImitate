@@ -7,7 +7,7 @@ from setuptools import setup
 
 setup(
     name='TImitate',
-    version='1.0',
+    version='1.3',
     description='Tencent Imitation Learning Platform for StarCraft-II',
     keywords='Imitation Learning, SC2',
     packages=[
